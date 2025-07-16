@@ -61,6 +61,11 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# MyScheduleManager specific files
+data/schedule.db
+data/backUp.csv
+data/*.db
+
 # Flask stuff:
 instance/
 .webassets-cache
