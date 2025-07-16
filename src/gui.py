@@ -4,146 +4,285 @@ import sys
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QTextEdit, QComboBox,
-    QDateTimeEdit, QDateEdit, QTimeEdit, QMessageBox # 日時入力用の追加インポート
+    QDateTimeEdit, QMessageBox, QCheckBox,
+    QListWidget, QListWidgetItem, QStackedWidget, QScrollArea # リスト表示用に追加
 )
-from PySide6.QtCore import QDateTime # QDateTimeオブジェクトを使用
-from src.data_manager import DataManager # DataManager
+from PySide6.QtCore import QDateTime, Qt
+
+from src.data_manager import DataManager
 
 class ScheduleApp(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("My Schedule Manager")
-        self.setGeometry(100, 100, 900, 700) # ウィンドウサイズを少し大きくしました
+        self.setGeometry(100, 100, 1000, 700) # ウィンドウサイズを少し広げました
+        self.data_manager = DataManager()
         self.init_ui()
-        self.data_manager = DataManager() # DataManager のインスタンスを作成
+        self._load_schedules_to_list() # アプリ起動時に予定を読み込む
 
     def init_ui(self):
-        # メインレイアウト（垂直方向）
-        main_layout = QVBoxLayout()
+        main_layout = QHBoxLayout()
 
-        # --- 1. 予定入力フォーム ---
-        form_layout = QVBoxLayout()
-        form_layout.setSpacing(10) # 各要素間のスペース
+        # --- 左側: 予定入力フォーム ---
+        form_panel_layout = QVBoxLayout()
+        form_panel_layout.setSpacing(10)
 
-        # ヘッダー
         header_label = QLabel("📅 新しい予定の登録")
         header_label.setStyleSheet("font-size: 24px; font-weight: bold; margin-bottom: 15px; color: #333;")
-        form_layout.addWidget(header_label)
+        form_panel_layout.addWidget(header_label)
 
-        # 各入力フィールドの追加
-        # タイトル
-        form_layout.addWidget(QLabel("タイトル:"))
+        # ... (タイトル、開始日時、終了日時、区分、場所の入力フィールドはそのまま) ...
+        form_panel_layout.addWidget(QLabel("タイトル:"))
         self.title_input = QLineEdit()
         self.title_input.setPlaceholderText("例: 家族と旅行、定例会議")
-        form_layout.addWidget(self.title_input)
+        form_panel_layout.addWidget(self.title_input)
 
-        # 開始日時
-        form_layout.addWidget(QLabel("開始日時:"))
-        self.start_datetime_input = QDateTimeEdit(QDateTime.currentDateTime()) # 現在日時を初期値に
-        self.start_datetime_input.setCalendarPopup(True) # カレンダーポップアップを有効に
+        form_panel_layout.addWidget(QLabel("開始日時:"))
+        self.start_datetime_input = QDateTimeEdit(QDateTime.currentDateTime())
+        self.start_datetime_input.setCalendarPopup(True)
         self.start_datetime_input.setDisplayFormat("yyyy/MM/dd HH:mm")
-        form_layout.addWidget(self.start_datetime_input)
+        form_panel_layout.addWidget(self.start_datetime_input)
 
-        # 終了日時
-        form_layout.addWidget(QLabel("終了日時:"))
-        self.end_datetime_input = QDateTimeEdit(QDateTime.currentDateTime().addSecs(3600)) # 1時間後を初期値に
+        form_panel_layout.addWidget(QLabel("終了日時:"))
+        self.end_datetime_input = QDateTimeEdit(QDateTime.currentDateTime().addSecs(3600))
         self.end_datetime_input.setCalendarPopup(True)
         self.end_datetime_input.setDisplayFormat("yyyy/MM/dd HH:mm")
-        form_layout.addWidget(self.end_datetime_input)
+        form_panel_layout.addWidget(self.end_datetime_input)
 
-        # 区分
-        form_layout.addWidget(QLabel("区分:"))
+        form_panel_layout.addWidget(QLabel("区分:"))
         self.category_input = QComboBox()
         self.category_input.addItems(["プライベート", "仕事", "学習", "その他"])
-        form_layout.addWidget(self.category_input)
+        form_panel_layout.addWidget(self.category_input)
 
-        # 場所
-        form_layout.addWidget(QLabel("場所:"))
+        form_panel_layout.addWidget(QLabel("場所:"))
         self.location_input = QLineEdit()
         self.location_input.setPlaceholderText("例: 箱根旅館、会議室A")
-        form_layout.addWidget(self.location_input)
+        form_panel_layout.addWidget(self.location_input)
 
-        # 内容
-        form_layout.addWidget(QLabel("内容 (タスク等):"))
-        self.description_input = QTextEdit() # 複数行入力用
-        self.description_input.setPlaceholderText("例:\n□ 旅館チェックイン前に電話\n□ 温泉の予約")
-        self.description_input.setFixedHeight(100) # 高さ固定
-        form_layout.addWidget(self.description_input)
+        # --- ここから変更/追加 ---
+        # 予定の内容（詳細説明）用フィールド
+        form_panel_layout.addWidget(QLabel("内容 (詳細説明):"))
+        self.details_content_input = QTextEdit() # 新しい名前
+        self.details_content_input.setPlaceholderText("例: 家族構成や旅行先の注意点など、タスクではない詳細情報。")
+        self.details_content_input.setFixedHeight(80) # 高さを調整
+        form_panel_layout.addWidget(self.details_content_input)
 
-        # ボタン類
+        # タスクリスト入力用フィールド
+        form_panel_layout.addWidget(QLabel("タスクリスト (1行に1タスク):")) # ラベルも変更
+        self.task_input = QTextEdit() # 新しい名前
+        self.task_input.setPlaceholderText("例:\n- 旅館チェックイン前に電話\n- 温泉の予約")
+        self.task_input.setFixedHeight(80) # 高さを調整
+        form_panel_layout.addWidget(self.task_input)
+        # --- ここまで変更/追加 ---
+
         button_layout = QHBoxLayout()
         self.save_button = QPushButton("予定を保存")
         self.save_button.clicked.connect(self.save_schedule)
         button_layout.addWidget(self.save_button)
 
         self.sync_button = QPushButton("Googleカレンダーと同期")
-        self.sync_button.clicked.connect(self.sync_google_calendar) # 後で実装
+        self.sync_button.clicked.connect(self.sync_google_calendar)
         button_layout.addWidget(self.sync_button)
 
-        form_layout.addLayout(button_layout)
+        form_panel_layout.addLayout(button_layout)
+        form_panel_layout.addStretch()
 
-        main_layout.addLayout(form_layout)
-        main_layout.addStretch() # 残りのスペースを埋める
+        main_layout.addLayout(form_panel_layout, 1)
+
+        # --- 右側: 予定一覧表示と詳細表示 ---
+        schedule_list_panel_layout = QVBoxLayout()
+        schedule_list_panel_layout.setSpacing(10)
+
+        list_header_label = QLabel("🗓️ 登録済みの予定")
+        list_header_label.setStyleSheet("font-size: 24px; font-weight: bold; margin-bottom: 15px; color: #333;")
+        schedule_list_panel_layout.addWidget(list_header_label)
+
+        self.schedule_list_widget = QListWidget()
+        self.schedule_list_widget.itemClicked.connect(self._show_schedule_detail)
+        schedule_list_panel_layout.addWidget(self.schedule_list_widget)
+
+        # 予定詳細表示エリア
+        self.detail_area = QWidget()
+        detail_layout = QVBoxLayout()
+        
+        self.detail_title = QLabel("選択された予定")
+        self.detail_title.setStyleSheet("font-size: 18px; font-weight: bold; color:#0056b3;")
+        detail_layout.addWidget(self.detail_title)
+
+        self.detail_start_end = QLabel("")
+        self.detail_location = QLabel("")
+        self.detail_category = QLabel("")
+        
+        detail_layout.addWidget(self.detail_start_end)
+        detail_layout.addWidget(self.detail_location)
+        detail_layout.addWidget(self.detail_category)
+
+        # 詳細説明表示用のQLabel
+        detail_layout.addWidget(QLabel("<b>詳細内容:</b>"))
+        self.detail_description_label = QLabel("") # QLabelとして追加
+        self.detail_description_label.setWordWrap(True) # 長文対応
+        detail_layout.addWidget(self.detail_description_label) # レイアウトに追加
+
+        # タスクリスト表示用のウィジェット
+        task_list_label = QLabel("<b>タスク:</b>")
+        detail_layout.addWidget(task_list_label)
+
+        self.task_list_container = QVBoxLayout()
+        self.task_scroll_area = QScrollArea()
+        self.task_scroll_area.setWidgetResizable(True)
+        self.task_scroll_area.setMinimumHeight(200)  # 最小高さを200pxに設定
+        self.task_scroll_area.setMaximumHeight(400)  # 最大高さを400pxに設定（スクロール可能）
+        self.task_scroll_content = QWidget()
+        self.task_scroll_content.setLayout(self.task_list_container)
+        self.task_scroll_area.setWidget(self.task_scroll_content)
+        
+        detail_layout.addWidget(self.task_scroll_area)
+
+        detail_layout.addStretch()
+        self.detail_area.setLayout(detail_layout)
+        self.detail_area.hide()
+
+        schedule_list_panel_layout.addWidget(self.detail_area)
+        schedule_list_panel_layout.addStretch()
+
+        main_layout.addLayout(schedule_list_panel_layout, 2)
 
         self.setLayout(main_layout)
 
     def save_schedule(self):
-        # フォームからデータを取得
-        title = self.title_input.text()
+        title = self.title_input.text().strip()
         start_dt = self.start_datetime_input.dateTime().toString("yyyy-MM-dd HH:mm:ss")
         end_dt = self.end_datetime_input.dateTime().toString("yyyy-MM-dd HH:mm:ss")
         category = self.category_input.currentText()
-        location = self.location_input.text()
-        description = self.description_input.toPlainText()
+        location = self.location_input.text().strip()
+        # --- ここから変更/追加 ---
+        detailed_description = self.details_content_input.toPlainText().strip() # 新しい内容フィールドから取得
+        task_input_text = self.task_input.toPlainText().strip() # タスク入力フィールドから取得
+        # --- ここまで変更/追加 ---
 
-        # 必須項目チェック
         if not title or not start_dt or not end_dt:
             QMessageBox.warning(self, "入力エラー", "タイトル、開始日時、終了日時は必須です。")
             return
 
-        # 日付の順序チェック
         start_qdatetime = self.start_datetime_input.dateTime()
         end_qdatetime = self.end_datetime_input.dateTime()
         if start_qdatetime >= end_qdatetime:
             QMessageBox.warning(self, "入力エラー", "終了日時は開始日時よりも後に設定してください。")
             return
             
-        # DataManager を使って予定を保存
+        # --- ここを変更 ---
+        # save_schedule には詳細内容を渡す
         schedule_id = self.data_manager.save_schedule(
-            title, start_dt, end_dt, category, location, description
+            title, start_dt, end_dt, category, location, detailed_description # detailed_description を渡す
         )
+        # --- ここまで変更 ---
 
         if schedule_id:
-            # タスク部分の処理 (descriptionから解析して保存)
-            # 行ごとに分割し、空行を除去
-            task_lines = [line.strip() for line in description.split('\n') if line.strip()]
+            # タスクは task_input_text から解析して保存
+            task_lines = [
+                line.strip().lstrip('□- ').strip()
+                for line in task_input_text.split('\n') if line.strip()
+            ]
             if task_lines:
                 self.data_manager.save_tasks(schedule_id, task_lines)
 
             QMessageBox.information(self, "保存完了", f"予定 '{title}' をデータベースに保存しました。")
-            self._clear_form() # フォームをクリアするメソッドを呼び出す (後で実装)
+            self._clear_form()
+            self._load_schedules_to_list()
         else:
             QMessageBox.critical(self, "保存失敗", "予定の保存中にエラーが発生しました。")
-    
+
+
     def _clear_form(self):
-        """入力フォームをクリアするヘルパーメソッド"""
+        # ... (既存の _clear_form メソッドはそのまま) ...
         self.title_input.clear()
         self.start_datetime_input.setDateTime(QDateTime.currentDateTime())
         self.end_datetime_input.setDateTime(QDateTime.currentDateTime().addSecs(3600))
-        self.category_input.setCurrentIndex(0) # 最初の項目を選択
+        self.category_input.setCurrentIndex(0)
         self.location_input.clear()
-        self.description_input.clear()
+        self.details_content_input.clear() # 新しい詳細内容フィールドをクリア
+        self.task_input.clear()            # 新しいタスク入力フィールドをクリア
+
+    def _load_schedules_to_list(self):
+        self.schedule_list_widget.clear()
+        schedules = self.data_manager.get_all_schedules()
+        
+        self.schedules_data = {s[0]: s for s in schedules}
+
+        for schedule in schedules:
+            schedule_id = schedule[0]
+            title = schedule[1]
+            start_dt = QDateTime.fromString(schedule[2], "yyyy-MM-dd HH:mm:ss").toString("MM/dd HH:mm")
+            
+            item_text = f"{start_dt} - {title}"
+            list_item = QListWidgetItem(item_text)
+            
+            list_item.setData(Qt.UserRole, schedule_id) 
+            self.schedule_list_widget.addItem(list_item)
+        
+        if schedules:
+            self.schedule_list_widget.setCurrentRow(0)
+            self._show_schedule_detail(self.schedule_list_widget.currentItem())
+
+    def _show_schedule_detail(self, item):
+        """リストで選択された予定の詳細を表示し、タスクをチェックボックスで表示します。"""
+        if not item:
+            self.detail_area.hide()
+            return
+            
+        schedule_id = item.data(Qt.UserRole)
+        self.current_selected_schedule_id = schedule_id
+        schedule_data = self.schedules_data.get(schedule_id)
+
+        if schedule_data:
+            self.detail_title.setText(f"{schedule_data[1]}")
+            self.detail_start_end.setText(f"<b>開始-終了:</b> {QDateTime.fromString(schedule_data[2], 'yyyy-MM-dd HH:mm:ss').toString('yyyy/MM/dd HH:mm')} - {QDateTime.fromString(schedule_data[3], 'yyyy-MM-dd HH:mm:ss').toString('yyyy/MM/dd HH:mm')}")
+            self.detail_location.setText(f"<b>場所:</b> {schedule_data[4] or '未設定'}")
+            self.detail_category.setText(f"<b>区分:</b> {schedule_data[5] or '未設定'}")
+            
+            # 詳細内容を表示
+            self.detail_description_label.setText(schedule_data[6] or "なし") # descriptionカラムから詳細内容を表示
+
+            # 既存のタスクチェックボックスを全てクリア
+            for i in reversed(range(self.task_list_container.count())):
+                widget = self.task_list_container.itemAt(i).widget()
+                if widget is not None:
+                    widget.deleteLater()
+            
+            # タスク情報を取得してチェックボックスとして表示
+            tasks = self.data_manager.get_tasks_for_schedule(schedule_id)
+            if not tasks:
+                self.task_list_container.addWidget(QLabel("<i>タスクはありません</i>"))
+            else:
+                for task in tasks:
+                    task_id, task_desc, is_completed = task
+                    checkbox = QCheckBox(task_desc)
+                    checkbox.setChecked(bool(is_completed))
+                    checkbox.task_id = task_id
+                    checkbox.stateChanged.connect(self._on_task_checkbox_changed)
+                    self.task_list_container.addWidget(checkbox)
+            
+            # スクロールエリア内のウィジェットを更新したらレイアウトも更新
+            self.task_scroll_content.setLayout(self.task_list_container)
+            self.detail_area.show()
+        else:
+            self.detail_area.hide()
+
+    def _on_task_checkbox_changed(self, state):
+        checkbox = self.sender()
+        if checkbox:
+            task_id = checkbox.task_id
+            is_completed = bool(state == Qt.CheckState.Checked)
+            self.data_manager.update_task_completion(task_id, is_completed)
+            QMessageBox.information(self, "タスク更新", f"タスク '{checkbox.text()}' の状態を更新しました。")
 
     def sync_google_calendar(self):
-        # Googleカレンダー連携ロジックを呼び出す（calendar_api.pyに実装予定）
         QMessageBox.information(self, "同期", "Googleカレンダーとの同期機能を呼び出します。")
-        # 実際にはAPIを呼び出して予定を送信する
-    
-    def closeEvent(self, event):
-        """ウィンドウが閉じられるときにデータベース接続を閉じる"""
-        self.data_manager.close()
-        event.accept() # イベントを受け入れてウィンドウを閉じる
 
+    def closeEvent(self, event):
+        self.data_manager.close()
+        event.accept()
+        
 def run_gui():
     app = QApplication(sys.argv)
     window = ScheduleApp()

@@ -89,7 +89,7 @@ class DataManager:
             print(f"予定保存エラー: {e}")
             return None
     
-    def save_task(self, schedule_id, tasks_list):
+    def save_tasks(self, schedule_id, tasks_list):
         """指定された予定に紐づくタスクをデータベースに保存します。"""
         if not self.conn:
             print("データベース接続が確立されていないため、タスクを保存できません。")
@@ -126,7 +126,7 @@ class DataManager:
             print("データベース接続が確立されていないため、タスクを取得できません。")
             return []
         
-        self.cursor.execute("SELECT id, task_description, is_comleted FROM tasks WHERE schedule_id = ?", (schedule_id,))
+        self.cursor.execute("SELECT id, task_description, is_completed FROM tasks WHERE schedule_id = ?", (schedule_id,))
         return self.cursor.fetchall()
     
     def update_task_completion(self, task_id, is_completed):
