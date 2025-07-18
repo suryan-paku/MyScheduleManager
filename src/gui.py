@@ -17,6 +17,8 @@ class ScheduleApp(QWidget):
         self.setWindowTitle("My Schedule Manager")
         self.setGeometry(100, 100, 1000, 700) # ウィンドウサイズを少し広げました
         self.data_manager = DataManager()
+        self.editing_schedule_id = None  # 編集中の予定ID
+        self.is_edit_mode = False  # 編集モードフラグ
         self.init_ui()
         self._load_schedules_to_list() # アプリ起動時に予定を読み込む
 
@@ -27,9 +29,9 @@ class ScheduleApp(QWidget):
         form_panel_layout = QVBoxLayout()
         form_panel_layout.setSpacing(10)
 
-        header_label = QLabel("📅 新しい予定の登録")
-        header_label.setStyleSheet("font-size: 24px; font-weight: bold; margin-bottom: 15px; color: #333;")
-        form_panel_layout.addWidget(header_label)
+        self.header_label = QLabel("📅 新しい予定の登録")
+        self.header_label.setStyleSheet("font-size: 24px; font-weight: bold; margin-bottom: 15px; color: #333;")
+        form_panel_layout.addWidget(self.header_label)
 
         # ... (タイトル、開始日時、終了日時、区分、場所の入力フィールドはそのまま) ...
         form_panel_layout.addWidget(QLabel("タイトル:"))
@@ -138,6 +140,15 @@ class ScheduleApp(QWidget):
         
         detail_layout.addWidget(self.task_scroll_area)
 
+        # 編集ボタンを追加
+        edit_button_layout = QHBoxLayout()
+        self.edit_schedule_button = QPushButton("この予定を編集")
+        self.edit_schedule_button.clicked.connect(self._edit_current_schedule)
+        self.edit_schedule_button.setStyleSheet("background-color: #28a745; color: white; font-weight: bold; padding: 8px;")
+        edit_button_layout.addWidget(self.edit_schedule_button)
+        edit_button_layout.addStretch()
+        detail_layout.addLayout(edit_button_layout)
+
         detail_layout.addStretch()
         self.detail_area.setLayout(detail_layout)
         self.detail_area.hide()
@@ -155,10 +166,8 @@ class ScheduleApp(QWidget):
         end_dt = self.end_datetime_input.dateTime().toString("yyyy-MM-dd HH:mm:ss")
         category = self.category_input.currentText()
         location = self.location_input.text().strip()
-        # --- ここから変更/追加 ---
-        detailed_description = self.details_content_input.toPlainText().strip() # 新しい内容フィールドから取得
-        task_input_text = self.task_input.toPlainText().strip() # タスク入力フィールドから取得
-        # --- ここまで変更/追加 ---
+        detailed_description = self.details_content_input.toPlainText().strip()
+        task_input_text = self.task_input.toPlainText().strip()
 
         if not title or not start_dt or not end_dt:
             QMessageBox.warning(self, "入力エラー", "タイトル、開始日時、終了日時は必須です。")
@@ -169,28 +178,46 @@ class ScheduleApp(QWidget):
         if start_qdatetime >= end_qdatetime:
             QMessageBox.warning(self, "入力エラー", "終了日時は開始日時よりも後に設定してください。")
             return
-            
-        # --- ここを変更 ---
-        # save_schedule には詳細内容を渡す
-        schedule_id = self.data_manager.save_schedule(
-            title, start_dt, end_dt, category, location, detailed_description # detailed_description を渡す
-        )
-        # --- ここまで変更 ---
 
-        if schedule_id:
-            # タスクは task_input_text から解析して保存
-            task_lines = [
-                line.strip().lstrip('□- ').strip()
-                for line in task_input_text.split('\n') if line.strip()
-            ]
-            if task_lines:
-                self.data_manager.save_tasks(schedule_id, task_lines)
+        if self.is_edit_mode and self.editing_schedule_id:
+            # 編集モード: 既存の予定を更新
+            success = self.data_manager.update_schedule(
+                self.editing_schedule_id, title, start_dt, end_dt, category, location, detailed_description
+            )
+            if success:
+                # タスクも更新（既存のタスクを削除して新しく保存）
+                task_lines = [
+                    line.strip().lstrip('□✅- ').strip()
+                    for line in task_input_text.split('\n') if line.strip()
+                ]
+                if task_lines:
+                    self.data_manager.save_tasks(self.editing_schedule_id, task_lines)
 
-            QMessageBox.information(self, "保存完了", f"予定 '{title}' をデータベースに保存しました。")
-            self._clear_form()
-            self._load_schedules_to_list()
+                QMessageBox.information(self, "更新完了", f"予定 '{title}' を更新しました。")
+                self._cancel_edit_mode()  # 編集モードを終了
+                self._load_schedules_to_list()
+            else:
+                QMessageBox.critical(self, "更新失敗", "予定の更新中にエラーが発生しました。")
         else:
-            QMessageBox.critical(self, "保存失敗", "予定の保存中にエラーが発生しました。")
+            # 新規作成モード
+            schedule_id = self.data_manager.save_schedule(
+                title, start_dt, end_dt, category, location, detailed_description
+            )
+
+            if schedule_id:
+                # タスクを保存
+                task_lines = [
+                    line.strip().lstrip('□- ').strip()
+                    for line in task_input_text.split('\n') if line.strip()
+                ]
+                if task_lines:
+                    self.data_manager.save_tasks(schedule_id, task_lines)
+
+                QMessageBox.information(self, "保存完了", f"予定 '{title}' をデータベースに保存しました。")
+                self._clear_form()
+                self._load_schedules_to_list()
+            else:
+                QMessageBox.critical(self, "保存失敗", "予定の保存中にエラーが発生しました。")
 
 
     def _clear_form(self):
@@ -271,10 +298,76 @@ class ScheduleApp(QWidget):
     def _on_task_checkbox_changed(self, state):
         checkbox = self.sender()
         if checkbox:
-            task_id = checkbox.task_id
-            is_completed = bool(state == Qt.CheckState.Checked)
-            self.data_manager.update_task_completion(task_id, is_completed)
-            QMessageBox.information(self, "タスク更新", f"タスク '{checkbox.text()}' の状態を更新しました。")
+            task_id = getattr(checkbox, 'task_id', None)
+            if task_id:
+                is_completed = bool(state == 2)  # 2 = Qt.CheckState.Checked
+                self.data_manager.update_task_completion(task_id, is_completed)
+                print(f"タスク '{checkbox.text()}' の状態を更新: {'完了' if is_completed else '未完了'}")
+
+    def _edit_current_schedule(self):
+        """選択された予定を編集モードで開く"""
+        if hasattr(self, 'current_selected_schedule_id') and self.current_selected_schedule_id:
+            self.editing_schedule_id = self.current_selected_schedule_id
+            self.is_edit_mode = True
+            self._load_schedule_for_editing()
+            self._update_ui_for_edit_mode()
+
+    def _load_schedule_for_editing(self):
+        """編集対象の予定データをフォームに読み込む"""
+        schedule_data = self.schedules_data.get(self.editing_schedule_id)
+        if schedule_data:
+            # フォームに既存データを設定
+            self.title_input.setText(schedule_data[1])  # タイトル
+            self.start_datetime_input.setDateTime(QDateTime.fromString(schedule_data[2], "yyyy-MM-dd HH:mm:ss"))
+            self.end_datetime_input.setDateTime(QDateTime.fromString(schedule_data[3], "yyyy-MM-dd HH:mm:ss"))
+            
+            # 区分（category）を設定
+            category_index = self.category_input.findText(schedule_data[5])
+            if category_index != -1:
+                self.category_input.setCurrentIndex(category_index)
+                
+            self.location_input.setText(schedule_data[4] or "")  # 場所
+            self.details_content_input.setText(schedule_data[6] or "")  # 詳細内容
+            
+            # タスクデータを取得してタスク入力欄に設定
+            tasks = self.data_manager.get_tasks_for_schedule(self.editing_schedule_id)
+            task_text = ""
+            for task in tasks:
+                task_id, task_desc, is_completed = task
+                task_text += f"{'✅' if is_completed else '□'} {task_desc}\n"
+            self.task_input.setText(task_text.strip())
+
+    def _update_ui_for_edit_mode(self):
+        """UIを編集モード用に更新"""
+        self.header_label.setText("📝 予定の編集")
+        self.save_button.setText("変更を保存")
+        self.save_button.setStyleSheet("background-color: #ffc107; color: black; font-weight: bold; padding: 8px;")
+        
+        # キャンセルボタンを追加
+        if not hasattr(self, 'cancel_button'):
+            self.cancel_button = QPushButton("編集をキャンセル")
+            self.cancel_button.clicked.connect(self._cancel_edit_mode)
+            self.cancel_button.setStyleSheet("background-color: #dc3545; color: white; font-weight: bold; padding: 8px;")
+            # 保存ボタンの隣にキャンセルボタンを追加
+            button_layout = self.save_button.parent().layout()
+            button_layout.addWidget(self.cancel_button)
+
+    def _cancel_edit_mode(self):
+        """編集モードをキャンセルして新規作成モードに戻る"""
+        self.is_edit_mode = False
+        self.editing_schedule_id = None
+        self._clear_form()
+        self._update_ui_for_create_mode()
+
+    def _update_ui_for_create_mode(self):
+        """UIを新規作成モード用に更新"""
+        self.header_label.setText("📅 新しい予定の登録")
+        self.save_button.setText("予定を保存")
+        self.save_button.setStyleSheet("")  # デフォルトスタイルに戻す
+        
+        # キャンセルボタンを非表示
+        if hasattr(self, 'cancel_button'):
+            self.cancel_button.hide()
 
     def sync_google_calendar(self):
         QMessageBox.information(self, "同期", "Googleカレンダーとの同期機能を呼び出します。")

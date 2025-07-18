@@ -88,6 +88,30 @@ class DataManager:
         except sqlite3.Error as e:
             print(f"予定保存エラー: {e}")
             return None
+
+    def update_schedule(self, schedule_id, title, start_dt, end_dt, category, location, description):
+        """既存の予定をデータベースで更新します。"""
+        if not self.conn:
+            print("データベース接続が確立されていないため、予定を更新できません。")
+            return False
+        
+        try:
+            self.cursor.execute('''
+                UPDATE schedules 
+                SET title = ?, start_datatime = ?, end_datatime = ?, category = ?, location = ?, description = ?
+                WHERE id = ?
+            ''', (title, start_dt, end_dt, category, location, description, schedule_id))
+            self.conn.commit()
+            
+            if self.cursor.rowcount > 0:
+                print(f"予定ID{schedule_id}が正常に更新されました。")
+                return True
+            else:
+                print(f"予定ID{schedule_id}が見つからず、更新されませんでした。")
+                return False
+        except sqlite3.Error as e:
+            print(f"予定更新エラー: {e}")
+            return False
     
     def save_tasks(self, schedule_id, tasks_list):
         """指定された予定に紐づくタスクをデータベースに保存します。"""
@@ -100,10 +124,10 @@ class DataManager:
             self.cursor.execute("DELETE FROM tasks WHERE schedule_id = ?", (schedule_id,))
 
             for task_desc in tasks_list:
-                if task_desc in tasks_list:
+                if task_desc.strip():  # 空でないタスクのみ保存
                     self.cursor.execute('''
-                        INSERT INTO tasks (schedule_id, task_description)
-                        VALUES (?, ?)
+                        INSERT INTO tasks (schedule_id, task_description, is_completed)
+                        VALUES (?, ?, 0)
                     ''', (schedule_id, task_desc))
             self.conn.commit()
             print(f"予定ID{schedule_id}に紐づくタスクが保存されました。")
