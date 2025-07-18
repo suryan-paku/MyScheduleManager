@@ -66,6 +66,10 @@ data/schedule.db
 data/backUp.csv
 data/*.db
 
+# Code editor temporary files
+tempCodeRunnerFile.py
+**/tempCodeRunnerFile.*
+
 # Flask stuff:
 instance/
 .webassets-cache
