@@ -43,6 +43,12 @@ class NotificationManager:
         
         # 最後に通知した時間を記録する辞書（schedule_id: last_notification_time）
         self.last_notifications = {}
+        
+        # スケジュール開始タスクのチェック状態を記録する辞書（schedule_id: is_checked）
+        self.schedule_start_checked = {}
+        
+        # 通知を繰り返す予定のリスト
+        self.repeat_notification_schedules = set()
     
     def check_notifications(self):
         """通知が必要な予定をチェックする"""
@@ -56,42 +62,86 @@ class NotificationManager:
             title = schedule[1]
             start_time_str = schedule[2]
             
-            # 通知設定を取得
+            # 開始時間をdatetimeオブジェクトに変換
+            start_time = datetime.strptime(start_time_str, "%Y-%m-%d %H:%M:%S")
+            
+            # 1. 通知設定による通知
             notification_minutes = None
             try:
                 notification_minutes = schedule[9]  # notification_minutes カラムは9番目
             except IndexError:
-                continue  # 通知設定がない場合はスキップ
+                pass
             
-            if notification_minutes is None:
-                continue  # 通知設定がない場合はスキップ
-            
-            # 開始時間をdatetimeオブジェクトに変換
-            start_time = datetime.strptime(start_time_str, "%Y-%m-%d %H:%M:%S")
-            
-            # 通知時間を計算（開始時間の何分前に通知するか）
-            notification_time = start_time - timedelta(minutes=notification_minutes)
-            
-            # 現在時刻が通知時間を過ぎているかつ、まだ通知していないか、前回の通知から24時間以上経過している場合
-            last_notified = self.last_notifications.get(schedule_id)
-            if (current_time >= notification_time and 
-                (last_notified is None or (current_time - last_notified).total_seconds() > 86400)):
+            if notification_minutes is not None:
+                # 通知時間を計算（開始時間の何分前に通知するか）
+                notification_time = start_time - timedelta(minutes=notification_minutes)
                 
-                # 通知を表示
-                self.show_notification(title, start_time_str, schedule_id)
+                # 現在時刻が通知時間を過ぎているかつ、まだ通知していないか、前回の通知から24時間以上経過している場合
+                last_notified = self.last_notifications.get(f"{schedule_id}_scheduled")
+                if (current_time >= notification_time and 
+                    (last_notified is None or (current_time - last_notified).total_seconds() > 86400)):
+                    
+                    # 通知を表示
+                    self.show_notification(title, start_time_str, schedule_id, "scheduled")
+                    
+                    # 最後に通知した時間を記録
+                    self.last_notifications[f"{schedule_id}_scheduled"] = current_time
+            
+            # 2. 開始時間から5分後の強制通知
+            five_min_after_start = start_time + timedelta(minutes=5)
+            
+            # 「スケジュールの開始」タスクのチェック状態を取得
+            start_task_checked = self.schedule_start_checked.get(schedule_id, False)
+            
+            # 現在時刻が開始時間から5分後を過ぎていて、まだ通知していない場合
+            last_notified = self.last_notifications.get(f"{schedule_id}_5min")
+            if (current_time >= five_min_after_start and not start_task_checked and
+                (last_notified is None or (current_time - last_notified).total_seconds() > 300)):  # 5分ごとに繰り返し
                 
-                # 最後に通知した時間を記録
-                self.last_notifications[schedule_id] = current_time
+                # 「スケジュールの開始」タスクのチェック状態を確認
+                tasks = self.data_manager.get_tasks_for_schedule(schedule_id)
+                for task in tasks:
+                    task_id, task_desc, is_completed = task
+                    if task_desc == "スケジュールの開始":
+                        if is_completed:
+                            start_task_checked = True
+                            self.schedule_start_checked[schedule_id] = True
+                            # チェックされていれば繰り返し通知リストから削除
+                            if schedule_id in self.repeat_notification_schedules:
+                                self.repeat_notification_schedules.remove(schedule_id)
+                        else:
+                            # チェックされていなければ繰り返し通知リストに追加
+                            self.repeat_notification_schedules.add(schedule_id)
+                        break
+                
+                # チェックされていなければ通知
+                if not start_task_checked:
+                    self.show_notification(
+                        title, 
+                        start_time_str, 
+                        schedule_id, 
+                        "start_reminder",
+                        "スケジュールの開始時間から5分が経過しました。「スケジュールの開始」にチェックを入れてください。"
+                    )
+                    
+                    # 最後に通知した時間を記録
+                    self.last_notifications[f"{schedule_id}_5min"] = current_time
     
-    def show_notification(self, title, start_time, schedule_id):
+    def show_notification(self, title, start_time, schedule_id, notification_type, custom_message=None):
         """通知を表示する"""
         # 開始時間を読みやすい形式に変換
         readable_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S").strftime("%Y/%m/%d %H:%M")
         
+        # 通知メッセージを設定
+        if custom_message:
+            message = custom_message
+        else:
+            message = f"予定「{title}」が {readable_time} から始まります。"
+        
         # システムトレイ通知を表示
         self.tray_icon.showMessage(
             "予定の通知",
-            f"予定「{title}」が {readable_time} から始まります。",
+            message,
             QSystemTrayIcon.Information,
             5000  # 5秒間表示
         )
@@ -100,12 +150,13 @@ class NotificationManager:
         if self.sound.isLoaded():
             self.sound.play()
         
-        # ポップアップメッセージボックスを表示
-        QMessageBox.information(
-            self.parent,
-            "予定の通知",
-            f"予定「{title}」が {readable_time} から始まります。"
-        )
+        # ポップアップメッセージボックスを表示（最前面に表示）
+        msg_box = QMessageBox(self.parent)
+        msg_box.setWindowTitle("予定の通知")
+        msg_box.setText(message)
+        msg_box.setIcon(QMessageBox.Information)
+        msg_box.setWindowFlags(msg_box.windowFlags() | Qt.WindowStaysOnTopHint)  # 最前面に表示
+        msg_box.exec()
     
     def tray_icon_activated(self, reason):
         """システムトレイアイコンがクリックされたときの処理"""
@@ -113,6 +164,14 @@ class NotificationManager:
             # シングルクリックでウィンドウを表示
             self.parent.showNormal()
             self.parent.activateWindow()
+            
+    def update_task_check_status(self, schedule_id, task_desc, is_checked):
+        """タスクのチェック状態を更新する"""
+        if task_desc == "スケジュールの開始":
+            self.schedule_start_checked[schedule_id] = is_checked
+            # チェックされていれば繰り返し通知リストから削除
+            if is_checked and schedule_id in self.repeat_notification_schedules:
+                self.repeat_notification_schedules.remove(schedule_id)
 
 class ScheduleApp(QWidget):
     def __init__(self):
@@ -188,13 +247,17 @@ class ScheduleApp(QWidget):
         form_panel_layout.addWidget(self.task_input)
         
         # 通知設定用のUI
-        notification_layout = QHBoxLayout()
-        notification_layout.addWidget(QLabel("通知:"))
+        notification_layout = QVBoxLayout()
+        notification_layout.setSpacing(5)
+        
+        # スケジュール通知設定
+        schedule_notification_layout = QHBoxLayout()
+        schedule_notification_layout.addWidget(QLabel("スケジュール通知:"))
         
         # 通知を有効にするチェックボックス
         self.notification_enabled_checkbox = QCheckBox("開始時刻の")
         self.notification_enabled_checkbox.stateChanged.connect(self._toggle_notification_settings)
-        notification_layout.addWidget(self.notification_enabled_checkbox)
+        schedule_notification_layout.addWidget(self.notification_enabled_checkbox)
         
         # 通知時間（分前）を設定するスピンボックス
         self.notification_minutes_spinbox = QSpinBox()
@@ -202,10 +265,33 @@ class ScheduleApp(QWidget):
         self.notification_minutes_spinbox.setValue(30)  # デフォルトは30分前
         self.notification_minutes_spinbox.setSuffix(" 分前")
         self.notification_minutes_spinbox.setEnabled(False)  # デフォルトは無効
-        notification_layout.addWidget(self.notification_minutes_spinbox)
+        schedule_notification_layout.addWidget(self.notification_minutes_spinbox)
         
-        notification_layout.addWidget(QLabel("に通知する"))
-        notification_layout.addStretch()
+        schedule_notification_layout.addWidget(QLabel("に通知する"))
+        schedule_notification_layout.addStretch()
+        notification_layout.addLayout(schedule_notification_layout)
+        
+        # タスク通知設定
+        task_notification_layout = QHBoxLayout()
+        task_notification_layout.addWidget(QLabel("タスク通知:"))
+        
+        # タスク通知を有効にするチェックボックス
+        self.task_notification_enabled_checkbox = QCheckBox("前のタスク完了から")
+        self.task_notification_enabled_checkbox.stateChanged.connect(self._toggle_task_notification_settings)
+        task_notification_layout.addWidget(self.task_notification_enabled_checkbox)
+        
+        # タスク通知時間（分後）を設定するスピンボックス
+        self.task_notification_minutes_spinbox = QSpinBox()
+        self.task_notification_minutes_spinbox.setRange(1, 120)  # 1分〜2時間（120分）
+        self.task_notification_minutes_spinbox.setValue(15)  # デフォルトは15分後
+        self.task_notification_minutes_spinbox.setSuffix(" 分後")
+        self.task_notification_minutes_spinbox.setEnabled(False)  # デフォルトは無効
+        task_notification_layout.addWidget(self.task_notification_minutes_spinbox)
+        
+        task_notification_layout.addWidget(QLabel("に次のタスクを確認"))
+        task_notification_layout.addStretch()
+        notification_layout.addLayout(task_notification_layout)
+        
         form_panel_layout.addLayout(notification_layout)
         # --- ここまで変更/追加 ---
 
@@ -338,6 +424,11 @@ class ScheduleApp(QWidget):
         notification_minutes = None
         if self.notification_enabled_checkbox.isChecked():
             notification_minutes = self.notification_minutes_spinbox.value()
+            
+        # タスク通知設定を取得
+        task_notification_minutes = None
+        if self.task_notification_enabled_checkbox.isChecked():
+            task_notification_minutes = self.task_notification_minutes_spinbox.value()
 
         if not title or not start_dt or not end_dt:
             QMessageBox.warning(self, "入力エラー", "タイトル、開始日時、終了日時は必須です。")
@@ -352,16 +443,27 @@ class ScheduleApp(QWidget):
         if self.is_edit_mode and self.editing_schedule_id:
             # 編集モード: 既存の予定を更新
             success = self.data_manager.update_schedule(
-                self.editing_schedule_id, title, start_dt, end_dt, category, location, detailed_description, notification_minutes
+                self.editing_schedule_id, title, start_dt, end_dt, category, location, detailed_description, 
+                notification_minutes, task_notification_minutes
             )
             if success:
                 # タスクも更新（既存のタスクを削除して新しく保存）
-                task_lines = [
-                    line.strip().lstrip('□✅- ').strip()
-                    for line in task_input_text.split('\n') if line.strip()
-                ]
-                if task_lines:
-                    self.data_manager.save_tasks(self.editing_schedule_id, task_lines)
+                # 自動タスクと入力タスクを結合
+                auto_tasks = ["スケジュールの開始"]
+                
+                # ユーザーが入力したタスクを取得（自動タスクを除外）
+                user_tasks = []
+                for line in task_input_text.split('\n'):
+                    task_text = line.strip().lstrip('□✅- ').strip()
+                    if task_text and task_text not in ["スケジュールの開始", "スケジュールの終了"]:
+                        user_tasks.append(task_text)
+                
+                # 最後に「スケジュールの終了」タスクを追加
+                all_tasks = auto_tasks + user_tasks + ["スケジュールの終了"]
+                
+                # タスクを保存
+                if all_tasks:
+                    self.data_manager.save_tasks(self.editing_schedule_id, all_tasks)
 
                 QMessageBox.information(self, "更新完了", f"予定 '{title}' を更新しました。")
                 self._cancel_edit_mode()  # 編集モードを終了
@@ -371,17 +473,26 @@ class ScheduleApp(QWidget):
         else:
             # 新規作成モード
             schedule_id = self.data_manager.save_schedule(
-                title, start_dt, end_dt, category, location, detailed_description, 0, notification_minutes
+                title, start_dt, end_dt, category, location, detailed_description, 0, 
+                notification_minutes, task_notification_minutes
             )
 
             if schedule_id:
-                # タスクを保存
-                task_lines = [
+                # 自動タスクと入力タスクを結合
+                auto_tasks = ["スケジュールの開始"]
+                
+                # ユーザーが入力したタスクを取得
+                user_tasks = [
                     line.strip().lstrip('□- ').strip()
                     for line in task_input_text.split('\n') if line.strip()
                 ]
-                if task_lines:
-                    self.data_manager.save_tasks(schedule_id, task_lines)
+                
+                # 最後に「スケジュールの終了」タスクを追加
+                all_tasks = auto_tasks + user_tasks + ["スケジュールの終了"]
+                
+                # タスクを保存
+                if all_tasks:
+                    self.data_manager.save_tasks(schedule_id, all_tasks)
 
                 QMessageBox.information(self, "保存完了", f"予定 '{title}' をデータベースに保存しました。")
                 self._clear_form()
@@ -412,6 +523,11 @@ class ScheduleApp(QWidget):
         self.notification_enabled_checkbox.setChecked(False)
         self.notification_minutes_spinbox.setValue(30)
         self.notification_minutes_spinbox.setEnabled(False)
+        
+        # タスク通知設定をリセット
+        self.task_notification_enabled_checkbox.setChecked(False)
+        self.task_notification_minutes_spinbox.setValue(15)
+        self.task_notification_minutes_spinbox.setEnabled(False)
 
     def _load_schedules_to_list(self):
         self.schedule_list_widget.clear()
@@ -447,9 +563,22 @@ class ScheduleApp(QWidget):
                 # 古いレコードの場合はロックされていないとみなす
                 pass
                 
+            # 完了状態を確認
+            is_completed = False
+            try:
+                is_completed = schedule[10] == 1  # is_completed カラムは10番目
+            except IndexError:
+                # 古いレコードの場合は完了していないとみなす
+                pass
+                
             if is_locked:
-                list_item.setIcon(self.style().standardIcon(self.style().SP_MessageBoxWarning))
+                list_item.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxWarning))
                 list_item.setText(f"{item_text} 🔒")
+                
+            if is_completed:
+                # グレーアウト表示
+                list_item.setForeground(Qt.gray)
+                list_item.setText(f"{item_text} ✓")
             
             list_item.setData(Qt.UserRole, schedule_id) 
             self.schedule_list_widget.addItem(list_item)
@@ -495,10 +624,32 @@ class ScheduleApp(QWidget):
                 
             if notification_minutes is not None:
                 self.detail_category.setText(f"{self.detail_category.text()} <b>🔔 {notification_minutes}分前に通知</b>")
+                
+            # タスク通知設定を表示
+            task_notification_minutes = None
+            try:
+                task_notification_minutes = schedule_data[12]  # task_notification_minutes カラムは12番目
+            except IndexError:
+                # 古いレコードの場合はタスク通知設定なし
+                pass
+                
+            if task_notification_minutes is not None:
+                self.detail_category.setText(f"{self.detail_category.text()} <b>⏱️ タスク完了{task_notification_minutes}分後に確認</b>")
             
             # ロック状態を表示
             if is_locked:
                 self.detail_category.setText(f"{self.detail_category.text()} <b>🔒 ロック中</b>")
+                
+            # 完了状態を確認
+            is_completed = False
+            try:
+                is_completed = schedule_data[10] == 1  # is_completed カラムは10番目
+            except IndexError:
+                # 古いレコードの場合は完了していないとみなす
+                pass
+                
+            if is_completed:
+                self.detail_category.setText(f"{self.detail_category.text()} <b>✓ 完了済み</b>")
             
             # 詳細内容を表示
             self.detail_description_label.setText(schedule_data[6] or "なし") # descriptionカラムから詳細内容を表示
@@ -549,6 +700,22 @@ class ScheduleApp(QWidget):
                 is_completed = bool(state == 2)  # 2 = Qt.CheckState.Checked
                 self.data_manager.update_task_completion(task_id, is_completed)
                 print(f"タスク '{checkbox.text()}' の状態を更新: {'完了' if is_completed else '未完了'}")
+                
+                schedule_id = self.current_selected_schedule_id
+                if schedule_id:
+                    # 「スケジュールの開始」タスクのチェック状態を通知マネージャーに通知
+                    if checkbox.text() == "スケジュールの開始":
+                        self.notification_manager.update_task_check_status(schedule_id, "スケジュールの開始", is_completed)
+                    
+                    # 「スケジュールの終了」タスクがチェックされた場合、予定を完了状態にする
+                    if is_completed and checkbox.text() == "スケジュールの終了":
+                        self.data_manager.update_schedule_completion(schedule_id, True)
+                        self._load_schedules_to_list()  # 一覧を更新して完了状態を反映
+                            
+                    # 「スケジュールの終了」タスクのチェックが外された場合、予定の完了状態を解除
+                    elif not is_completed and checkbox.text() == "スケジュールの終了":
+                        self.data_manager.update_schedule_completion(schedule_id, False)
+                        self._load_schedules_to_list()  # 一覧を更新して完了状態を反映
 
     def _edit_current_schedule(self):
         """選択された予定を編集モードで開く"""
@@ -596,6 +763,23 @@ class ScheduleApp(QWidget):
                 self.notification_enabled_checkbox.setChecked(False)
                 self.notification_minutes_spinbox.setValue(30)
                 self.notification_minutes_spinbox.setEnabled(False)
+                
+            # タスク通知設定を読み込む
+            task_notification_minutes = None
+            try:
+                task_notification_minutes = schedule_data[12]  # task_notification_minutes カラムは12番目
+            except IndexError:
+                # 古いレコードの場合はタスク通知設定なし
+                pass
+                
+            if task_notification_minutes is not None:
+                self.task_notification_enabled_checkbox.setChecked(True)
+                self.task_notification_minutes_spinbox.setValue(task_notification_minutes)
+                self.task_notification_minutes_spinbox.setEnabled(True)
+            else:
+                self.task_notification_enabled_checkbox.setChecked(False)
+                self.task_notification_minutes_spinbox.setValue(15)
+                self.task_notification_minutes_spinbox.setEnabled(False)
             
             # タスクデータを取得してタスク入力欄に設定
             tasks = self.data_manager.get_tasks_for_schedule(self.editing_schedule_id)
@@ -699,9 +883,14 @@ class ScheduleApp(QWidget):
             self.end_datetime_input.setDateTime(start_datetime.addSecs(3600))
     
     def _toggle_notification_settings(self, state):
-        """通知設定の有効/無効を切り替える"""
+        """スケジュール通知設定の有効/無効を切り替える"""
         is_enabled = state == 2  # Qt.CheckState.Checked = 2
         self.notification_minutes_spinbox.setEnabled(is_enabled)
+        
+    def _toggle_task_notification_settings(self, state):
+        """タスク通知設定の有効/無効を切り替える"""
+        is_enabled = state == 2  # Qt.CheckState.Checked = 2
+        self.task_notification_minutes_spinbox.setEnabled(is_enabled)
     
     def _validate_end_datetime(self, end_datetime):
         """終了日時が開始日時より前にならないようにチェック"""
