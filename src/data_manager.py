@@ -50,7 +50,9 @@ class DataManager:
                     category TEXT,
                     location TEXT,
                     description TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    is_locked INTEGER DEFAULT 0, -- 0:ロックなし, 1:ロック中
+                    notification_minutes INTEGER DEFAULT NULL -- 通知を送る分前（NULL:通知なし）
                 )
             ''')
 
@@ -65,11 +67,41 @@ class DataManager:
                     FOREIGN KEY (schedule_id) REFERENCES schedules(id) ON DELETE CASCADE
                 )
             ''')
+            
+            # マイグレーション: is_locked カラムが存在するか確認し、なければ追加
+            self._migrate_database()
+            
             print("データベーステーブルが正常に作成または確認されました。")
         except sqlite3.Error as e:
             print(f"テーブル作成エラー: {e}")
+            
+    def _migrate_database(self):
+        """データベースのマイグレーション処理を行います。"""
+        try:
+            # schedulesテーブルのカラム情報を取得
+            self.cursor.execute("PRAGMA table_info(schedules)")
+            columns = self.cursor.fetchall()
+            
+            # is_locked カラムが存在するかチェック
+            has_is_locked = any(column[1] == 'is_locked' for column in columns)
+            # notification_minutes カラムが存在するかチェック
+            has_notification = any(column[1] == 'notification_minutes' for column in columns)
+            
+            if not has_is_locked:
+                print("データベースをマイグレーション: is_locked カラムを追加します")
+                self.cursor.execute("ALTER TABLE schedules ADD COLUMN is_locked INTEGER DEFAULT 0")
+                self.conn.commit()
+                print("マイグレーション完了: is_locked カラムを追加しました")
+                
+            if not has_notification:
+                print("データベースをマイグレーション: notification_minutes カラムを追加します")
+                self.cursor.execute("ALTER TABLE schedules ADD COLUMN notification_minutes INTEGER DEFAULT NULL")
+                self.conn.commit()
+                print("マイグレーション完了: notification_minutes カラムを追加しました")
+        except sqlite3.Error as e:
+            print(f"マイグレーションエラー: {e}")
     
-    def save_schedule(self, title,start_dt,end_dt,category,location,description):
+    def save_schedule(self, title, start_dt, end_dt, category, location, description, is_locked=0, notification_minutes=None):
         """新しい予定をデータベースに保存します。"""
         if not self.conn:
             print("データベース接続が確立されていないため、予定を保存できません。")
@@ -78,9 +110,9 @@ class DataManager:
         created_at = datetime.now().isoformat()
         try:
             self.cursor.execute('''
-                INSERT INTO schedules (title, start_datatime, end_datatime, category, location, description, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (title, start_dt, end_dt, category, location, description, created_at,))
+                INSERT INTO schedules (title, start_datatime, end_datatime, category, location, description, created_at, is_locked, notification_minutes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (title, start_dt, end_dt, category, location, description, created_at, is_locked, notification_minutes))
             self.conn.commit()
             schedule_id = self.cursor.lastrowid #挿入されたレコードIDを取得
             print(f"予定'{title}'がID{schedule_id}で保存されました。")
@@ -89,18 +121,29 @@ class DataManager:
             print(f"予定保存エラー: {e}")
             return None
 
-    def update_schedule(self, schedule_id, title, start_dt, end_dt, category, location, description):
-        """既存の予定をデータベースで更新します。"""
+    def update_schedule(self, schedule_id, title, start_dt, end_dt, category, location, description, notification_minutes=None):
+        """既存の予定をデータベースで更新します。ロックされている場合は更新できません。"""
         if not self.conn:
             print("データベース接続が確立されていないため、予定を更新できません。")
             return False
         
         try:
+            # ロック状態を確認
+            self.cursor.execute("SELECT is_locked FROM schedules WHERE id = ?", (schedule_id,))
+            result = self.cursor.fetchone()
+            if not result:
+                print(f"予定ID{schedule_id}が見つかりません。")
+                return False
+            
+            if result[0] == 1:  # ロックされている場合
+                print(f"予定ID{schedule_id}はロックされているため更新できません。")
+                return False
+            
             self.cursor.execute('''
                 UPDATE schedules 
-                SET title = ?, start_datatime = ?, end_datatime = ?, category = ?, location = ?, description = ?
+                SET title = ?, start_datatime = ?, end_datatime = ?, category = ?, location = ?, description = ?, notification_minutes = ?
                 WHERE id = ?
-            ''', (title, start_dt, end_dt, category, location, description, schedule_id))
+            ''', (title, start_dt, end_dt, category, location, description, notification_minutes, schedule_id))
             self.conn.commit()
             
             if self.cursor.rowcount > 0:
@@ -114,12 +157,23 @@ class DataManager:
             return False
     
     def save_tasks(self, schedule_id, tasks_list):
-        """指定された予定に紐づくタスクをデータベースに保存します。"""
+        """指定された予定に紐づくタスクをデータベースに保存します。ロックされている場合は保存できません。"""
         if not self.conn:
             print("データベース接続が確立されていないため、タスクを保存できません。")
-            return
+            return False
         
         try:
+            # ロック状態を確認
+            self.cursor.execute("SELECT is_locked FROM schedules WHERE id = ?", (schedule_id,))
+            result = self.cursor.fetchone()
+            if not result:
+                print(f"予定ID{schedule_id}が見つかりません。")
+                return False
+            
+            if result[0] == 1:  # ロックされている場合
+                print(f"予定ID{schedule_id}はロックされているためタスクを保存できません。")
+                return False
+            
             #既存のタスクをいったん削除して再挿入する（シンプルにするための実装）
             self.cursor.execute("DELETE FROM tasks WHERE schedule_id = ?", (schedule_id,))
 
@@ -131,8 +185,10 @@ class DataManager:
                     ''', (schedule_id, task_desc))
             self.conn.commit()
             print(f"予定ID{schedule_id}に紐づくタスクが保存されました。")
+            return True
         except sqlite3.Error as e:
             print(f"タスク保存エラー: {e}")
+            return False
 
     def get_all_schedules(self):
         """すべての予定を取得します。"""
@@ -154,20 +210,125 @@ class DataManager:
         return self.cursor.fetchall()
     
     def update_task_completion(self, task_id, is_completed):
-        """タスクの完了状態を更新します。"""
+        """タスクの完了状態を更新します。ロックされている場合は更新できません。"""
         if not self.conn:
             print("データベース接続が確立されていないため、タスクの状態を更新できません。")
-            return
-
-        completed_at = datetime.now().isoformat() if is_completed else None
+            return False
+        
         try:
+            # タスクに関連する予定IDを取得
+            self.cursor.execute("SELECT schedule_id FROM tasks WHERE id = ?", (task_id,))
+            result = self.cursor.fetchone()
+            if not result:
+                print(f"タスクID {task_id} が見つかりません。")
+                return False
+            
+            schedule_id = result[0]
+            
+            # 予定のロック状態を確認
+            self.cursor.execute("SELECT is_locked FROM schedules WHERE id = ?", (schedule_id,))
+            result = self.cursor.fetchone()
+            if not result:
+                print(f"予定ID {schedule_id} が見つかりません。")
+                return False
+            
+            if result[0] == 1:  # ロックされている場合
+                print(f"予定ID {schedule_id} はロックされているためタスクを更新できません。")
+                return False
+
+            completed_at = datetime.now().isoformat() if is_completed else None
             self.cursor.execute('''
                 UPDATE tasks SET is_completed = ?, completed_at = ? WHERE id = ?
             ''', (1 if is_completed else 0, completed_at, task_id))
             self.conn.commit()
             print(f"タスクID {task_id} の完了状態を更新しました: {is_completed}")
+            return True
         except sqlite3.Error as e:
             print(f"タスク状態の更新エラー: {e}")
+            return False
+    
+    def toggle_schedule_lock(self, schedule_id):
+        """予定のロック状態を切り替えます。"""
+        if not self.conn:
+            print("データベース接続が確立されていないため、予定のロック状態を更新できません。")
+            return False
+        
+        try:
+            # 現在のロック状態を確認
+            self.cursor.execute("SELECT is_locked FROM schedules WHERE id = ?", (schedule_id,))
+            result = self.cursor.fetchone()
+            if not result:
+                print(f"予定ID {schedule_id} が見つかりません。")
+                return False
+            
+            current_lock_state = result[0]
+            new_lock_state = 0 if current_lock_state else 1
+            
+            # ロック状態を反転
+            self.cursor.execute('''
+                UPDATE schedules SET is_locked = ? WHERE id = ?
+            ''', (new_lock_state, schedule_id))
+            self.conn.commit()
+            print(f"予定ID {schedule_id} のロック状態を更新しました: {new_lock_state}")
+            return True
+        except sqlite3.Error as e:
+            print(f"予定ロック状態の更新エラー: {e}")
+            return False
+    
+    def delete_schedule(self, schedule_id):
+        """予定を削除します。"""
+        if not self.conn:
+            print("データベース接続が確立されていないため、予定を削除できません。")
+            return False
+        
+        try:
+            # ロック状態を確認
+            self.cursor.execute("SELECT is_locked FROM schedules WHERE id = ?", (schedule_id,))
+            result = self.cursor.fetchone()
+            if not result:
+                print(f"予定ID {schedule_id} が見つかりません。")
+                return False
+            
+            if result[0] == 1:  # ロックされている場合
+                print(f"予定ID {schedule_id} はロックされているため削除できません。")
+                return False
+            
+            # 予定を削除（関連するタスクはON DELETE CASCADEで自動削除される）
+            self.cursor.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
+            self.conn.commit()
+            print(f"予定ID {schedule_id} を削除しました。")
+            return True
+        except sqlite3.Error as e:
+            print(f"予定削除エラー: {e}")
+            return False
+
+    def get_past_schedules(self):
+        """過去の予定を取得します。"""
+        if not self.conn:
+            print("データベース接続が確立されていないため、過去の予定を取得できません。")
+            return []
+        
+        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.cursor.execute("""
+            SELECT * FROM schedules 
+            WHERE end_datatime < ? 
+            ORDER BY start_datatime DESC
+        """, (current_datetime,))
+        return self.cursor.fetchall()
+    
+    def get_current_schedules(self):
+        """現在および未来の予定を取得します。"""
+        if not self.conn:
+            print("データベース接続が確立されていないため、予定を取得できません。")
+            return []
+        
+        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.cursor.execute("""
+            SELECT * FROM schedules 
+            WHERE end_datatime >= ? 
+            ORDER BY start_datatime ASC
+        """, (current_datetime,))
+        return self.cursor.fetchall()
 
     def close(self):
         """データベース接続を閉じます。"""
